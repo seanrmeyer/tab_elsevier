@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<title>Elsevier Connector</title>
+<script src="https://code.jquery.com/jquery-2.2.2.min.js" integrity="sha256-36cp2Co+/62rEAAYHLmRCPIych47CvdM+uTBJwSzWjI=" crossorigin="anonymous"></script>
+<script src="https://connectors.tableau.com/libs/tableauwdc-1.1.1.js" type="text/javascript"></script>
+<link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.6/css/bootstrap.min.css" integrity="sha384-1q8mTJOASx8j1Au+a5WDVnPi2lkFfwwEAa8hDDdjZlpLegxhjVME1fgjWPGmkzs7" crossorigin="anonymous">
+<script type="text/javascript">
+
+var baseUrl = '';
+var start = 0;
+var maxItems = 100;
+var availItems = 5000;
+var itemsPerIncrement = 100;
+var moreData = true;
+var allrows;
+var source;
+
+function getData(){
+while(start < Math.min(maxItems, availItems) && moreData == true)
+	{
+	fireRequest(start,itemsPerIncrement), startingpoint=$.Deferred();
+	startingpoint.resolve();
+	start += itemsPerIncrement;
+	}
+}
+
+// Tableau stuff
+(function() {
+
+  var myConnector = tableau.makeConnector();
+
+  myConnector.getColumnHeaders = function() {
+    _retrieveJsonData(function (tableData) {
+      var headers = tableData.headers;
+      var fieldNames = [];
+      var fieldTypes = [];
+
+      for (var fieldName in headers) {
+        if (headers.hasOwnProperty(fieldName)) {
+          fieldNames.push(fieldName);
+          fieldTypes.push(headers[fieldName]);
+        }
+      }
+      tableau.headersCallback(fieldNames, fieldTypes); // tell tableau about the fields and their types
+    });
+  };
+      
+  myConnector.getTableData = function (lastRecordToken) {
+    _retrieveJsonData(function (tableData) {
+      var rowData = tableData.rowData;
+      tableau.dataCallback(rowData, rowData.length.toString(), false);
+    });
+  };
+
+  tableau.registerConnector(myConnector);
+})();
+
+function fireRequest(start, count) {
+        return $.ajax({
+            type: "GET",
+            url: baseUrl+'&start='+start+'&count=' + count,
+            dataType: "JSON",
+            success: function(data){
+				var availItems;
+				var retrievedItems;
+				if(source == "Author Search" || source == "Scopus Search" || source == "Affiliation Search") {
+					if(!allrows) allrows = data;
+					else $.merge(allrows['search-results']['entry'], data['search-results']['entry']);
+					availItems = allrows['search-results']['opensearch:totalResults'];
+					retrievedItems = allrows['search-results']['entry'].length;
+					delete allrows['search-results']['link'];
+					delete allrows['search-results']['entry'][0]['link'];
+					$( "#status" ).html("Source: " + source + "<br />" + retrievedItems + "/" + Math.min(availItems, maxItems) + ' retrieved<br />' + availItems + ' available records');
+						if(retrievedItems >= Math.min(availItems, maxItems)) {
+							moreData = false;
+							$( "#status" ).append('<br />Retrieval complete<br />');
+							$( "#status" ).append('<button type="button" id="sendButton" class="btn btn-primary">Send Results to Tableau</button>');
+							}
+					}
+				else if(source == "Author Retrieval") {
+					allrows = data;
+					$( "#status" ).html("Source: " + source + "<br />");
+					$( "#status" ).append('<br />Retrieval complete<br />');
+					$( "#status" ).append('<button type="button" id="sendButton" class="btn btn-primary">Send Results to Tableau</button>');
+				}
+				console.log(JSON.stringify(allrows));
+            }
+        });
+}
+
+function cleanData(data) {
+
+}
+
+function _retrieveJsonData(retrieveDataCallback) {
+  if (!window.cachedTableData) {
+    var conData = JSON.parse(tableau.connectionData);
+    var jsonString = conData.jsonString;
+    if (conData.jsonUrl) {
+      var successCallback = function(data) 
+      {
+        window.cachedTableData = _jsToTable(data);
+        retrieveDataCallback(window.cachedTableData);
+      };
+      // Go get the json data
+      // This is the first, and most basic, of many attempts to get the data.
+      // We make different attempts that use different approaches, because if
+      // the server we are requesting data from has not enabled CORS, then the
+      // request will fail. In that case we try different proxies to try to get
+      // around the same origin policy. This is not as clean as it could be, but 
+      // for a general purpose connector, we want to make every attempt we can
+      // to pull in the data
+      _basicAjaxRequest1(conData.jsonUrl, successCallback);
+	  console.log("attempting to parse jsonUrl.");
+      return;
+    }
+    //try {
+	  console.log("attempting to parse jsonString. " + JSON.stringify(conData.jsonString).substring(0,100));
+      window.cachedTableData = _jsToTable(JSON.parse(JSON.stringify(conData.jsonString)));
+	  console.log("jsonString parsed.");
+    //}
+    //catch (e) {
+    //  tableau.abortWithError(e + " : unable to parse json data");
+    //  return;
+    //}
+  }
+  retrieveDataCallback(window.cachedTableData);
+}
+
+
+
+// Takes a hierarchical javascript object and tries to turn it into a table
+// Returns an object with headers and the row level data
+function _jsToTable(objectBlob) {
+  var rowData = _flattenData(objectBlob);
+  var headers = _extractHeaders(rowData);
+  return {"headers":headers, "rowData":rowData};
+}
+
+// Given an object:
+//   - finds the longest array in the object
+//   - flattens each element in that array so it is a single object with many properties
+// If there is no array that is a descendent of the original object, this wraps
+// the input in a single element array.
+function _flattenData(objectBlob) {
+  // first find the longest array
+  var longestArray = _findLongestArray(objectBlob, []);
+  if (!longestArray || longestArray.length == 0) {
+    // if no array found, just wrap the entire object blob in an array
+    longestArray = [objectBlob];
+  }
+  for (var ii = 0; ii < longestArray.length; ++ii) {
+    _flattenObject(longestArray[ii]);
+  }
+  return longestArray;
+}
+
+// Given an array of js objects, returns a map from data column name to data type
+function _extractHeaders(rowData) {
+  var toRet = {};
+  for (var row = 0; row < rowData.length; ++row) {
+    var rowLine = rowData[row];
+    for (var key in rowLine) {
+      if (rowLine.hasOwnProperty(key)) {
+        if (!(key in toRet)) {
+          toRet[key] = _determineType(rowLine[key]);
+        }
+      }
+    }
+  }
+  return toRet;
+}
+
+// Given a primitive, tries to make a guess at the data type of the input
+function _determineType(primitive) {
+  // possible types: 'float', 'date', 'datetime', 'bool', 'string', 'int'
+  if (parseInt(primitive) == primitive) return 'int';
+  if (parseFloat(primitive) == primitive) return 'float';
+  if (isFinite(new Date(primitive).getTime())) return 'datetime';
+  return 'string';
+}
+
+function _submitToJsonToTableau(jsonString, jsonUrl) {
+    tableau.connectionName = source; //
+    var conData = {"jsonString" : jsonString, "jsonUrl": jsonUrl};
+    tableau.connectionData = JSON.stringify(conData);
+    tableau.submit();  
+}
+
+
+// Finds the longest array that is a descendent of the given object
+function _findLongestArray(obj, bestSoFar) {
+  if (!obj) {
+    // skip null/undefined objects
+    return bestSoFar;
+  }
+
+  // if an array, just return the longer one
+  if (obj.constructor === Array) {
+    // I think I can simplify this line to
+    // return obj;
+    // and trust that the caller will deal with taking the longer array
+    return (obj.length > bestSoFar.length) ? obj : bestSoFar;
+  }
+  if (typeof obj != "object") {
+    return bestSoFar;
+  }
+  for (var key in obj) {
+    if (obj.hasOwnProperty(key)) {
+      var subBest = _findLongestArray(obj[key], bestSoFar);
+      if (subBest.length > bestSoFar.length) {
+        bestSoFar = subBest;
+      }
+    }
+  }
+  return bestSoFar;
+}
+
+// Given an object with hierarchical properties, flattens it so all the properties
+// sit on the base object.
+function _flattenObject(obj) {
+  for (var key in obj) {
+    if (obj.hasOwnProperty(key) && typeof obj[key] == 'object') {
+      var subObj = obj[key];
+      _flattenObject(subObj);
+      for (var k in subObj) {
+        if (subObj.hasOwnProperty(k)) {
+          obj[key + '_' + k] = subObj[k];
+        }
+      }
+      delete obj[key];
+    }
+  }
+}
+
+function disableInputs(){
+	// this will disable all input elements
+	var elems = document.getElementsByTagName('input');
+	var len = elems.length;
+
+	for (var i = 0; i < len; i++) {
+		elems[i].disabled = true;
+	}
+	
+	document.getElementById("source").disabled = false;
+	document.getElementById("auretopt").disabled = true;
+	document.getElementById("afretopt").disabled = true;
+	document.getElementById("scopusopt").disabled = true;
+	document.getElementById("goButton").disabled = true;
+}
+
+$().ready(function () {
+
+		
+	disableInputs();
+	
+  var cancel = function (e) {    
+      e.stopPropagation();
+      e.preventDefault();
+  }
+$("#goButton").click(function(e) { // This event fires when a button is clicked
+// Since we use a form for input, make sure to stop the default form behavior
+	cancel(e);
+	baseUrl = '';
+	source = $( "#source option:selected").text();
+	var apiKey = $('input[name=apiKey]')[0].value.trim();
+	var afid = $('input[name=afid]')[0].value.trim();
+	var authid = $('input[name=authid]')[0].value.trim();
+	console.log(authid);
+	var auretopt = $( "#auretopt option:selected").text();
+	var scopusopt = $( "#scopusopt option:selected").text();
+	console.log(auretopt);
+	if($('input[name=maxRecords]')[0].value.trim() > 0) maxItems = $('input[name=maxRecords]')[0].value.trim();
+	else maxItems = 99999;
+
+	// check if the authid input field looks like a URL by the first token being longer than 10 characters
+	var first = authid.split(",");
+	if(first[0].length>11){
+		var arr = [];
+		$.ajax({
+					type: "GET",
+					url: "https://spreadsheets.google.com/feeds/list/" + authid + "/od6/public/values?alt=json",
+					dataType: "json",
+					async : false,
+					success: function(data){
+					for(var i in data.feed.entry)
+						arr.push(data.feed.entry[i]['gsx$scopusauthorid']['$t']);
+					}
+				});
+		authid = arr.join();
+	}
+	console.log(authid);
+	  
+	  switch(source)
+	  {
+		case "Affiliation Search":
+			baseUrl = 'https://api.elsevier.com/content/search/affiliation';
+			baseUrl += '?apiKey=' + apiKey + '&httpAccept=application%2Fjson&';
+			baseUrl += 'query=af-id(' + afid.replace(",", " OR ") + ')';
+			break;
+		case "Author Search":
+			baseUrl = 'https://api.elsevier.com/content/search/author';
+			baseUrl += '?apiKey=' + apiKey + '&httpAccept=application%2Fjson&';
+			baseUrl += 'query=au-id(' + authid.replace(",", " OR ") + ')';
+			break;
+		case "Scopus Search":
+			baseUrl = 'https://api.elsevier.com/content/search/scopus';
+			baseUrl += '?apiKey=' + apiKey + '&httpAccept=application%2Fjson&view=' + scopusopt + "&";
+			if(afid) baseUrl += 'query=af-id(' + afid.replace(", ", " OR ") + ')';
+			else if(authid) baseUrl += 'query=au-id(' + authid.replace(",", " OR ") + ')';
+			break;
+		case "ScienceDirect Search":
+			baseUrl = 'https://api.elsevier.com/content/search/scidir';
+			baseUrl += '?apiKey=' + apiKey + '&httpAccept=application%2Fjson&';
+			break;
+		case "ScienceDirect Object Search":
+			baseUrl = 'https://api.elsevier.com/content/search/scidir-object';
+			baseUrl += '?apiKey=' + apiKey + '&httpAccept=application%2Fjson&';
+			break;
+		case "Author Retrieval":
+			baseUrl = 'https://api.elsevier.com/content/author'
+					+ '?apiKey=' + apiKey + '&httpAccept=application%2Fjson&view=' + auretopt + '&'
+					+ 'author_id=' + authid;
+			break;
+		case "Affiliation Retrieval":
+			baseUrl = 'http://api.elsevier.com/content/affiliation/affiliation_id/'
+					+ afid;// + '?apiKey=' + apiKey + '&httpAccept=application%2Fjson&view=' + auretopt;
+			break;
+		default:
+			baseUrl = 'https://api.elsevier.com/content/search/affiliation';
+			baseUrl += '?apiKey=' + apiKey + '&httpAccept=application%2Fjson&';
+			break;
+	  }
+
+	  $( "#status" ).html('Fetching data...');
+	  getData();
+	});
+	
+
+$( "#source" )
+  .change(function () {
+	source = $( "#source option:selected").text();
+	console.log("source changed to " + source);
+	
+	
+	disableInputs();
+	document.getElementById("goButton").disabled = false;
+
+	if(source=="Affiliation Search"){
+		document.getElementById("afid").disabled = false;
+		$( "#viewlink" ).html('<a href="http://api.elsevier.com/documentation/search/AffiliationSearchViews.htm" target="_blank"><strong>Available Views</strong></a>');
+	}
+	if(source=="Author Search"){
+		document.getElementById("authid").disabled = false;
+		document.getElementById("afid").disabled = false;
+		document.getElementById("maxRecords").disabled = false;
+		$( "#viewlink" ).html('<a href="http://api.elsevier.com/documentation/search/AuthorSearchViews.htm" target="_blank"><strong>Available Views</strong></a>');
+	}
+	if(source=="Scopus Search"){
+		document.getElementById("authid").disabled = false;
+		document.getElementById("afid").disabled = false;
+		document.getElementById("maxRecords").disabled = false;
+		document.getElementById("scopusopt").disabled = false;
+		$( "#viewlink" ).html('<a href="http://api.elsevier.com/documentation/search/SCOPUSSearchViews.htm" target="_blank"><strong>Available Views</strong></a>');
+	}
+	else if(source=="Author Retrieval"){
+		document.getElementById("authid").disabled = false;
+		document.getElementById("auretopt").disabled = false;
+		document.getElementById("maxRecords").disabled = false;
+		$( "#viewlink" ).html('<a href="http://api.elsevier.com/documentation/retrieval/AuthorRetrievalViews.htm" target="_blank"><strong>Available Views</strong></a>');
+	}
+	else if(source=="Affiliation Retrieval"){
+		document.getElementById("afid").disabled = false;
+		document.getElementById("afretopt").disabled = false;
+		document.getElementById("maxRecords").disabled = false;
+		$( "#viewlink" ).html('<a href="http://api.elsevier.com/documentation/retrieval/AffiliationRetrievalViews.htm" target="_blank"><strong>Available Views</strong></a>');
+	}
+		
+});
+
+
+$('#status').on('click', '#sendButton', function(){ // This event fires when send button is clicked
+// Since we use a form for input, make sure to stop the default form behavior
+
+	
+	var jsonString = allrows;
+	var jsonUrl = '';
+    console.log( source );
+	_submitToJsonToTableau(jsonString, jsonUrl);
+	return;
+	});
+
+});
+
+</script>
+
+<style>
+body {
+	padding: 1em;
+}
+
+</style>
+
+</head>
+<body>
+
+<h2>Elsevier Web Data Connector for Tableau</h2>
+<div id="status">
+<form id="form">
+
+
+<div class="form-group">
+<label for="source">Source: </label>
+  <select id="source"  class="form-control" name="source">
+  
+	<option value="blank" selected="selected"></option>
+	<option value="affiliation">Affiliation Search</option>
+	<option value="author">Author Search</option>
+    <option value="scopus">Scopus Search</option>
+	<option value="authretrieval">Author Retrieval</option>
+  </select>
+</div>
+
+<div id="viewlink"><p></p>
+</div>
+
+<div class="form-group">
+<label for="apiKey">API Key</label>
+<input type="text" name="apiKey"  class="form-control" value="" disabled="true" />
+</div>
+
+<div class="form-group">
+<label for="afid">Affiliation ID (comma separated) </label>
+	
+<input type="text" name="afid" id="afid"  class="form-control" />
+</div>
+
+<div class="form-group">
+<label for="auretopt">Affiliation Retrieval Views: </label>
+	
+  <select id="afretopt"  class="form-control" name="afretopt">
+	<option value="LIGHT">LIGHT</option>
+	<option value="STANDARD">STANDARD</option>
+	<option value="ENHANCED">DOCUMENTS</option>
+	<option value="METRICS">AUTHORS</option>
+	<option value="ENTITLED">ENTITLED</option>
+  </select>
+</div>
+
+<div class="form-group">
+<label for="authid">Author ID (comma separated by author OR id of published google sheet) </label>
+	
+<input type="text" name="authid" id="authid" class="form-control" value="" />
+</div>
+
+<div class="form-group">
+<label for="auretopt">Author Retrieval Views: </label>
+  <select id="auretopt"  class="form-control" name="auretopt">
+	<option value="LIGHT">LIGHT</option>
+	<option value="STANDARD">STANDARD</option>
+	<option value="ENHANCED">ENHANCED</option>
+	<option value="METRICS">METRICS</option>
+	<option value="ENTITLED">ENTITLED</option>
+  </select>
+</div>
+
+<div class="form-group">
+<label for="scopusopt">Scopus Search Retrieval Views: </label>
+  <select id="scopusopt"  class="form-control" name="scopusopt">
+	<option value="STANDARD">STANDARD</option>
+	<option value="COMPLETE">COMPLETE</option>
+  </select>
+</div>
+
+
+
+<div class="form-group">
+<label for="maxRecords">Max number of records (0 for all, rounded up to nearest 100)</label>
+<input type="text" name="maxRecords" id="maxRecords" value="100" class="form-control" />
+</div>
+
+<div class="form-group">
+<button type="button" id="goButton" class="btn btn-primary">Get Records</button>
+</div>
+</form>
+</div><br />
+</body>
+</html>
