@@ -250,17 +250,15 @@ function disableInputs(){
 	document.getElementById("goButton").disabled = true;
 }
 
+// When the page loads
 $().ready(function () {
-
-		
 	disableInputs();
-	
   var cancel = function (e) {    
       e.stopPropagation();
       e.preventDefault();
   }
-$("#goButton").click(function(e) { // This event fires when a button is clicked
-// Since we use a form for input, make sure to stop the default form behavior
+ 
+$("#goButton").click(function(e) { // This event fires when the go button is pressed
 	cancel(e);
 	baseUrl = '';
 	source = $( "#source option:selected").text();
@@ -272,20 +270,25 @@ $("#goButton").click(function(e) { // This event fires when a button is clicked
 	var scopusopt = $( "#scopusopt option:selected").text();
 	console.log(auretopt);
 	if($('input[name=maxRecords]')[0].value.trim() > 0) maxItems = $('input[name=maxRecords]')[0].value.trim();
-	else maxItems = 99999;
-
+	else maxItems = 5000;
+	
 	// check if the authid input field looks like a URL by the first token being longer than 10 characters
-	var first = authid.split(",");
-	if(first[0].length>11){
+	var authIdInput = authid.split(",");
+	if(authIdInput[0].length>11){
 		var arr = [];
+		var ssId = authIdInput[0];
+		var colName = authIdInput[1].split(" ").join("").toLowerCase();
+		console.log(colName);
 		$.ajax({
 					type: "GET",
-					url: "https://spreadsheets.google.com/feeds/list/" + authid + "/od6/public/values?alt=json",
+					url: "https://spreadsheets.google.com/feeds/list/" + ssId + "/od6/public/values?alt=json",
 					dataType: "json",
 					async : false,
 					success: function(data){
-					for(var i in data.feed.entry)
-						arr.push(data.feed.entry[i]['gsx$scopusauthorid']['$t']);
+					for(var i in data.feed.entry){
+						if(data.feed.entry[i]['gsx$'+colName]['$t'].length > 0)
+							arr.push(data.feed.entry[i]['gsx$'+colName]['$t']);
+						}
 					}
 				});
 		authid = arr.join();
@@ -297,18 +300,18 @@ $("#goButton").click(function(e) { // This event fires when a button is clicked
 		case "Affiliation Search":
 			baseUrl = 'https://api.elsevier.com/content/search/affiliation';
 			baseUrl += '?apiKey=' + apiKey + '&httpAccept=application%2Fjson&';
-			baseUrl += 'query=af-id(' + afid.replace(",", " OR ") + ')';
+			baseUrl += 'query=af-id(' + afid.split(",").join("OR") + ')';
 			break;
 		case "Author Search":
 			baseUrl = 'https://api.elsevier.com/content/search/author';
 			baseUrl += '?apiKey=' + apiKey + '&httpAccept=application%2Fjson&';
-			baseUrl += 'query=au-id(' + authid.replace(",", " OR ") + ')';
+			baseUrl += 'query=au-id(' + authid.split(",").join("OR") + ')';
 			break;
 		case "Scopus Search":
 			baseUrl = 'https://api.elsevier.com/content/search/scopus';
 			baseUrl += '?apiKey=' + apiKey + '&httpAccept=application%2Fjson&view=' + scopusopt + "&";
-			if(afid) baseUrl += 'query=af-id(' + afid.replace(", ", " OR ") + ')';
-			else if(authid) baseUrl += 'query=au-id(' + authid.replace(",", " OR ") + ')';
+			if(afid) baseUrl += 'query=af-id(' + afid.split(",").join("OR") + ')';
+			else if(authid) baseUrl += 'query=au-id(' + authid.split(",").join("OR") + ')';
 			break;
 		case "ScienceDirect Search":
 			baseUrl = 'https://api.elsevier.com/content/search/scidir';
@@ -394,7 +397,6 @@ $('#status').on('click', '#sendButton', function(){ // This event fires when sen
 });
 
 </script>
-
 <style>
 body {
 	padding: 1em;
@@ -419,6 +421,10 @@ body {
 	<option value="author">Author Search</option>
     <option value="scopus">Scopus Search</option>
 	<option value="authretrieval">Author Retrieval</option>
+	<!-- <option value="authretrieval">Affiliation Retrieval</option>
+    <option value="scidirect">ScienceDirect Search</option>
+	<option value="scidirect object">ScienceDirect Object Search</option>
+	-->
   </select>
 </div>
 
@@ -426,8 +432,8 @@ body {
 </div>
 
 <div class="form-group">
-<label for="apiKey">API Key</label>
-<input type="text" name="apiKey"  class="form-control" value="" disabled="true" />
+<!-- <label for="apiKey">API Key</label> -->
+<input type="hidden" name="apiKey"  class="form-control" value="" disabled="true" />
 </div>
 
 <div class="form-group">
@@ -449,7 +455,7 @@ body {
 </div>
 
 <div class="form-group">
-<label for="authid">Author ID (comma separated by author OR id of published google sheet) </label>
+<label for="authid">Author ID (comma separated by author OR Google Sheet ID, Column Name) </label>
 	
 <input type="text" name="authid" id="authid" class="form-control" value="" />
 </div>
@@ -476,7 +482,7 @@ body {
 
 
 <div class="form-group">
-<label for="maxRecords">Max number of records (0 for all, rounded up to nearest 100)</label>
+<label for="maxRecords">Max number of records (Enter 0 for maximum allowed, rounded up to nearest 100)</label>
 <input type="text" name="maxRecords" id="maxRecords" value="100" class="form-control" />
 </div>
 
